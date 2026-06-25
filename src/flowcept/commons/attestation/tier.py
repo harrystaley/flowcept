@@ -1,139 +1,116 @@
-"""Source-attestation gate: consult tier at retrieval time before content is acted on.
+"""Source-attestation tier computation for ingested task content.
 
-Architectural separation (important):
+This module computes a *source-attestation tier* for content entering the
+provenance substrate. The tier is collected at ingest, carried on the task
+document, and consulted at the agent-task gate before retrieved content is acted
+upon.
 
-- The TIER is a *fact* about the content's provenance, computed at ingest by the
-  annotator and stored on the task document
-  (``attestation_tier = {"value": "S"|"W"|"N", ...}``).
-- The GATE POLICY -- which tiers to disallow (hard) and how much to down-weight each
-  tier (soft) -- lives in Flowcept configuration, NOT on the data. The same
-  annotated corpus is therefore re-gateable under different policies without
-  re-annotation, which is what the evaluation sweep requires.
+Tier semantics (trust boundary is T_S vs. {T_W, T_N}):
 
-Two knobs, both Flowcept policy:
+- ``S`` (strong): a cryptographic provenance claim (e.g. C2PA manifest, PKI
+  signature, Sigstore bundle, or a TPM 2.0 attestation / TPM-sealed signing key)
+  is present AND validates against a configured trust root. Forgery-resistant: an
+  attacker cannot reach this tier without a key that chains to a trusted root.
+- ``W`` (weak): a provenance claim is present but is NOT trust-anchored -- either an
+  unsigned-but-resolvable source handle, or a signature that does not validate
+  against any configured trust root (e.g. self-signed, or a TPM quote whose EK/AIK
+  chain we do not hold). Identity-asserting but forgeable.
+- ``N`` (none): no provenance claim, or a claim that fails to parse/resolve.
 
-- ``hard_blocked_tiers`` (hard / disallow): tiers excluded from retrieval, applied as a
-  DAO ``$match`` exclusion via :func:`gate_filter`. Default blocks ``{"N"}``.
-- ``soft_weight_factors`` (soft / adjust-weight): per-tier multiplier applied to the
-  retrieval similarity score via :func:`gate_rerank`, where the similarity lives
-  (the retriever/wrapper -- MongoDB does not compute similarity, so the soft
-  re-rank cannot live in the DAO ``$sort``). Default ``{"S":1.0,"W":0.5,"N":0.0}``.
+Note on TPM 2.0: the tier is decided by the same rule as any other claim --
+*does it validate against a configured trust root, and does it bind the content?*
+A TPM-sealed signing key whose certificate chains to a trusted CA -> T_S. A bare
+platform quote (attests the machine, not a content binding) or a TPM whose EK/AIK
+chain is not in the trust set -> T_W. "TPM" alone does not imply T_S; the
+validation outcome does. Validator backends are pluggable by attestation type
+(``c2pa``, ``pki``, ``sigstore``, ``tpm``).
 """
-from typing import Any, Callable, Dict, List, Optional
-
-from flowcept.commons.attestation.tier import Tier
+from typing import Any, Dict, Optional, Protocol
 
 
-_DEFAULT_SOFT_WEIGHT_FACTORS = {Tier.STRONG: 1.0, Tier.WEAK: 0.5, Tier.NONE: 0.0}
-_DEFAULT_HARD_BLOCKED_TIERS = [Tier.NONE]
+class Tier:
+    """Source-attestation tier constants."""
+
+    STRONG = "S"
+    WEAK = "W"
+    NONE = "N"
 
 
-def gate_filter(query_filter: Optional[Dict[str, Any]], hard_blocked_tiers: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Augment a DAO query filter to exclude blocked attestation tiers (HARD / disallow).
+class AttestationValidator(Protocol):
+    """Interface for a cryptographic-attestation validator backend.
 
-    The exclusion is applied in the retrieval query itself (a ``$match`` condition),
-    so blocked-tier content is never retrieved -- not retrieved-then-filtered.
+    Implementations decide whether a provenance claim chains to one of the
+    supplied trust roots. Backends are selected by configuration so a deployment
+    can use C2PA, PKI, Sigstore, or TPM (EK/AIK chain) validation without
+    changing call sites.
+    """
+
+    def validate(self, claim: Any, trust_roots: Any) -> bool:
+        """Return True iff ``claim`` validates against a root in ``trust_roots``."""
+        ...
+
+
+def resolve_handle(handle: Any) -> bool:
+    """Return True iff a non-cryptographic provenance handle resolves to a real origin.
+
+    For the static evaluation this is an offline check (e.g. the handle is present
+    in a bundled manifest of known source identifiers). Online resolution is the
+    re-validation hook's responsibility and is out of scope here.
+    """
+    return handle is not None and handle != ""
+
+
+def compute_tier(
+        evidence: Optional[Dict[str, Any]],
+        trust_roots: Any,
+        validator: Optional[AttestationValidator] = None,
+) -> Dict[str, Any]:
+    """Compute the source-attestation tier for an item's provenance ``evidence``.
 
     Parameters
     ----------
-    query_filter : dict or None
-        The existing DAO ``$match`` filter (may be None).
-    hard_blocked_tiers : list of str, optional
-        Tiers to disallow. POLICY from Flowcept config, not from the data.
-        Defaults to blocking T_N.
+    evidence : dict or None
+        Provenance carried with the content at ingest. Recognised keys:
+        ``claim`` (a cryptographic attestation, e.g. a C2PA manifest) and
+        ``handle`` (a non-cryptographic but resolvable source identifier).
+    trust_roots : Any
+        Configured set of trusted roots the validator checks a claim against.
+    validator : AttestationValidator, optional
+        Backend that decides whether a cryptographic claim chains to a trust root.
+        If a claim is present but no validator is configured, the claim is treated
+        as present-but-unverified (T_W), never T_S.
 
     Returns
     -------
     dict
-        The filter with an ``attestation_tier.value`` ``$nin`` exclusion added.
-        Items lacking a tier are treated as T_N (fail-closed) and thus excluded
-        whenever T_N is blocked.
+        Structured tier:
+        ``{"value": "S"|"W"|"N", "basis": <str>, "validated_against": <root id or None>}``.
     """
-    blocked = list(hard_blocked_tiers) if hard_blocked_tiers is not None else list(_DEFAULT_HARD_BLOCKED_TIERS)
-    new_filter = dict(query_filter) if query_filter else {}
-    # Fail-closed: documents with no tier are treated as T_N. When N is blocked,
-    # exclude both explicit-N and tier-absent documents.
-    if Tier.NONE in blocked:
-        new_filter["$and"] = new_filter.get("$and", []) + [
-            {"attestation_tier.value": {"$nin": blocked}},
-            {"attestation_tier.value": {"$exists": True}},
-        ]
-    else:
-        new_filter["attestation_tier.value"] = {"$nin": blocked}
-    return new_filter
+    if not evidence:
+        return {"value": Tier.NONE, "basis": "no_evidence", "validated_against": None}
 
+    claim = evidence.get("claim")
+    if claim is not None:
+        if validator is not None and validator.validate(claim, trust_roots):
+            return {
+                "value": Tier.STRONG,
+                "basis": evidence.get("claim_type", "cryptographic_claim"),
+                "validated_against": evidence.get("trust_root_id"),
+            }
+        # Present but not trust-anchored (e.g. self-signed) -> weak, never strong.
+        return {
+            "value": Tier.WEAK,
+            "basis": evidence.get("claim_type", "cryptographic_claim"),
+            "validated_against": None,
+            "reason": "untrusted_or_unverified_signer",
+        }
 
-def _default_score(item: Any) -> float:
-    """Read a retrieval similarity score off an item. Swappable wiring point.
+    handle = evidence.get("handle")
+    if handle is not None and resolve_handle(handle):
+        return {
+            "value": Tier.WEAK,
+            "basis": "resolvable_handle",
+            "validated_against": None,
+        }
 
-    The item/score shape is retriever-specific. Default convention: ``item["score"]``.
-    Pin this to the actual retriever's representation when wiring retrieval.
-    """
-    if isinstance(item, dict):
-        return float(item.get("score", 0.0))
-    return float(getattr(item, "score", 0.0))
-
-
-def _default_tier(item: Any) -> str:
-    """Read the attestation tier value off an item. Fail-closed to T_N if absent."""
-    tier_obj = item.get("attestation_tier") if isinstance(item, dict) else getattr(item, "attestation_tier", None)
-    if isinstance(tier_obj, dict):
-        return tier_obj.get("value", Tier.NONE)
-    return Tier.NONE
-
-
-def gate_rerank(
-        result: Any,
-        soft_weight_factors: Optional[Dict[str, float]] = None,
-        drop_zero: bool = True,
-        score_getter: Callable[[Any], float] = _default_score,
-        tier_getter: Callable[[Any], str] = _default_tier,
-) -> Any:
-    """Re-rank retrieved items by ``similarity * tier_weight`` (SOFT / adjust-weight).
-
-    Multiplicative down-weighting: an item's retrieval score is scaled by the weight
-    its tier maps to. Weights are POLICY from Flowcept config, not stored on the data;
-    the item supplies only its tier, the weight is looked up here.
-
-    Operates on the wrapper ``result`` (where similarity scores live), since the
-    MongoDB pipeline does not compute similarity. Non-collection results
-    (dict/string/response objects from non-retrieval tasks) are returned unchanged
-    -- the gate is a no-op for anything that is not a list of retrieval items.
-
-    Parameters
-    ----------
-    result : Any
-        The wrapped function's return. Gated only if it is a list of items; else
-        returned unchanged.
-    soft_weight_factors : dict, optional
-        Tier -> multiplier. POLICY from Flowcept config. Default
-        ``{"S":1.0,"W":0.5,"N":0.0}``.
-    drop_zero : bool
-        If True, items whose adjusted score is 0 (e.g. T_N at weight 0.0) are
-        removed -- giving the soft mode a hard-ish floor when a tier weight is 0.
-    score_getter, tier_getter : callable
-        Accessors for the retriever-specific item shape (swappable wiring points).
-
-    Returns
-    -------
-    Any
-        Re-ranked list (highest adjusted score first), or ``result`` unchanged if
-        it is not a gateable collection.
-    """
-    if not isinstance(result, list) or not result:
-        return result
-
-    weights = dict(soft_weight_factors) if soft_weight_factors is not None else dict(_DEFAULT_SOFT_WEIGHT_FACTORS)
-
-    scored = []
-    for item in result:
-        tier = tier_getter(item)  # tier from the DATA
-        w = weights.get(tier, weights.get(Tier.NONE, 0.0))  # weight from CONFIG
-        adjusted = score_getter(item) * w
-        scored.append((adjusted, item))
-
-    if drop_zero:
-        scored = [(s, it) for (s, it) in scored if s > 0.0]
-
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [it for (_s, it) in scored]
+    return {"value": Tier.NONE, "basis": "unresolvable_or_absent", "validated_against": None}
