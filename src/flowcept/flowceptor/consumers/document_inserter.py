@@ -8,6 +8,7 @@ from uuid import uuid4
 from flowcept.commons.task_data_preprocess import summarize_telemetry, tag_critical_task
 from flowcept.flowceptor.consumers.base_consumer import BaseConsumer
 from flowcept.commons.autoflush_buffer import AutoflushBuffer
+from flowcept.commons.attestation.annotate import annotate_tier
 from flowcept.commons.flowcept_dataclasses.task_object import TaskObject
 from flowcept.commons.flowcept_dataclasses.workflow_object import (
     WorkflowObject,
