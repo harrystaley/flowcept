@@ -26,6 +26,8 @@ from flowcept.configs import (
     ENRICH_MESSAGES,
     MONGO_ENABLED,
     LMDB_ENABLED,
+    ATTESTATION_ENABLED,
+    ATTESTATION_TRUST_ROOTS,
 )
 from flowcept.flowceptor.consumers.consumer_utils import (
     remove_empty_fields_from_dict,
@@ -147,6 +149,8 @@ class DocumentInserter(BaseConsumer):
 
         if ENRICH_MESSAGES:
             TaskObject.enrich_task_dict(message)
+            if ATTESTATION_ENABLED:
+                annotate_tier(message, ATTESTATION_TRUST_ROOTS)
             if (
                 "telemetry_at_start" in message
                 and message["telemetry_at_start"]

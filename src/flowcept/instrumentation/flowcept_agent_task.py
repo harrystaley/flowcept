@@ -14,7 +14,11 @@ from flowcept.commons.flowcept_dataclasses.task_object import TaskObject
 from flowcept.commons.flowcept_logger import FlowceptLogger
 from flowcept.commons.utils import replace_non_serializable
 from flowcept.commons.vocabulary import Status
+from flowcept.commons.attestation.gate import gate_rerank
 from flowcept.configs import (
+    ATTESTATION_GATE_ENABLED,
+    ATTESTATION_GATE_MODE,
+    ATTESTATION_SOFT_WEIGHT_FACTORS,
     INSTRUMENTATION_ENABLED,
     REPLACE_NON_JSON_SERIALIZABLE,
     TELEMETRY_ENABLED,
@@ -99,6 +103,8 @@ def agent_flowcept_task(func=None, **decorator_kwargs):
                 logger.exception(e)
 
             interceptor.intercept(task_obj.to_dict())
+            if ATTESTATION_GATE_ENABLED and ATTESTATION_GATE_MODE == "soft" and result is not None:
+                result = gate_rerank(result, ATTESTATION_SOFT_WEIGHT_FACTORS)
             return result
 
         return wrapper
