@@ -84,6 +84,21 @@ if LOG_FILE_PATH == "default":
 LOG_FILE_LEVEL = settings["log"].get("log_file_level", "disable").upper()
 LOG_STREAM_LEVEL = settings["log"].get("log_stream_level", "disable").upper()
 
+###########################
+#   Attestation Settings  #
+###########################
+
+# Attestation tier substrate
+ATTESTATION_SETTINGS = settings.get("attestation", {}) or {}
+ATTESTATION_ENABLED = ATTESTATION_SETTINGS.get("enabled", False)
+ATTESTATION_TRUST_ROOTS = ATTESTATION_SETTINGS.get("trust_roots", [])
+
+_GATE = ATTESTATION_SETTINGS.get("gate", {}) or {}
+ATTESTATION_GATE_ENABLED = _GATE.get("enabled", False)
+ATTESTATION_GATE_MODE = _GATE.get("mode", "soft")
+ATTESTATION_HARD_BLOCKED_TIERS = list(_GATE.get("hard_blocked_tiers", ["N"]))
+ATTESTATION_SOFT_WEIGHT_FACTORS = dict(_GATE.get("soft_weight_factors", {"S": 1.0, "W": 0.5, "N": 0.0}))
+
 ##########################
 #  Experiment Settings   #
 ##########################
@@ -141,7 +156,7 @@ if _mongo_settings:
     MONGO_CREATE_INDEX = _mongo_settings.get("create_collection_index", True)
 
 ######################
-#  LMDB Settings  #
+#  LMDB Settings    #
 ######################
 LMDB_SETTINGS = DATABASES.get("lmdb", {})
 LMDB_ENABLED = False
@@ -282,9 +297,9 @@ for adapter in settings.get("adapters", set()):
     ADAPTERS.add(settings["adapters"][adapter].get("kind"))
 
 
-##########
-# Config guardrails
-#####
+#####################
+# Config guardrails #
+#####################
 
 
 def validate_config():
