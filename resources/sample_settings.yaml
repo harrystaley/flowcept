@@ -1,5 +1,21 @@
 flowcept_version: 0.10.9 # Version of the Flowcept package. Do not update this manually. The CI updates it. This setting file is compatible with this version.
 
+attestation:
+  enabled: true
+  # Offline trust set for the static evaluation. Production points this at a
+  # C2PA trust list / PKI CA bundle / Sigstore trusted identities.
+  trust_roots:
+    - id: "eval-root-0"
+      type: "bundled"
+  gate:
+    enabled: true
+    mode: "soft"                 # "soft" | "hard" | "off"
+    hard_blocked_tiers: ["N"]    # HARD policy (Flowcept, not data)
+    soft_weight_factors:         # SOFT policy (Flowcept, not data)
+      S: 1.0
+      W: 0.5
+      N: 0.0
+
 project:
   debug: true # Toggle debug mode. This will add a property `debug: true` to all saved data, making it easier to retrieve/delete them later.
   json_serializer: default # JSON serialization mode: default or complex. If "complex", Flowcept will deal with complex python dicts that may contain JSON unserializable values
