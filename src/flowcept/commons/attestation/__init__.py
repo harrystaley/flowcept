@@ -1,0 +1,1 @@
+"""Source-attestation tier substrate: ingest-time tier annotation and retrieval-time gating."""
