@@ -28,7 +28,9 @@ _DEFAULT_SOFT_WEIGHT_FACTORS = {Tier.STRONG: 1.0, Tier.WEAK: 0.5, Tier.NONE: 0.0
 _DEFAULT_HARD_BLOCKED_TIERS = [Tier.NONE]
 
 
-def gate_filter(query_filter: Optional[Dict[str, Any]], hard_blocked_tiers: Optional[List[str]] = None) -> Dict[str, Any]:
+def gate_filter(query_filter: Optional[Dict[str, Any]],
+                hard_blocked_tiers: Optional[List[str]] = None
+                ) -> Dict[str, Any]:
     """Augment a DAO query filter to exclude blocked attestation tiers (HARD / disallow).
 
     The exclusion is applied in the retrieval query itself (a ``$match`` condition),
