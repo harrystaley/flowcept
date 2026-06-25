@@ -100,6 +100,10 @@ class TaskObject:
     custom_metadata: Dict[AnyStr, Any] = None
     """Custom metadata dictionary provided by the developer/user."""
 
+    attestation_tier: Dict[AnyStr, Any] = None
+    """Source-attestation tier computed at ingest by evaluating provenance evidence
+    against configured trust roots. {"value": "S"|"W"|"N", "basis": ..., "validated_against": ...}."""
+
     mq_host: str = None
     """Message queue host associated with the task."""
 
