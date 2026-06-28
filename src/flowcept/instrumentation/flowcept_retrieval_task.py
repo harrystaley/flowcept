@@ -85,8 +85,8 @@ def gate_retrieval(
                 parent_task_id=parent_task_id,
             )
         except Exception as e:
-            # Don't let a capture failure break retrieval.
-            FlowceptLogger().exception(e)
+            # Capture needs Flowcept started; gating already happened. Skip quietly.
+            FlowceptLogger().debug(f"retrieval capture skipped: {e}")
 
     return gated
 
