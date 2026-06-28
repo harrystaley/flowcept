@@ -24,6 +24,13 @@ platform quote (attests the machine, not a content binding) or a TPM whose EK/AI
 chain is not in the trust set -> T_W. "TPM" alone does not imply T_S; the
 validation outcome does. Validator backends are pluggable by attestation type
 (``c2pa``, ``pki``, ``sigstore``, ``tpm``).
+
+Non-cryptographic (structural) attestation uses a resolvable source ``handle``
+instead of a ``claim``: the handle validates iff it is a member of the configured
+manifest of genuine source handles (the structural trust root), yielding T_W
+(resolution/custody binding -- it proves the content is a genuine corpus entry,
+not who authored it). T_S over such content requires author-level signing (e.g.
+C2PA) layered on top, at which point the ``claim`` path applies.
 """
 from typing import Any, Dict, Optional, Protocol
 
@@ -50,14 +57,42 @@ class AttestationValidator(Protocol):
         ...
 
 
-def resolve_handle(handle: Any) -> bool:
+def resolve_handle(handle: Any, trust_roots: Any = None) -> bool:
     """Return True iff a non-cryptographic provenance handle resolves to a real origin.
 
-    For the static evaluation this is an offline check (e.g. the handle is present
-    in a bundled manifest of known source identifiers). Online resolution is the
-    re-validation hook's responsibility and is out of scope here.
+    Structural attestation: the handle resolves iff it is a member of the
+    configured manifest of genuine source handles (the structural trust root).
+    When no manifest is supplied, falls back to a presence check -- the
+    pre-manifest behaviour, retained for callers that pass no manifest.
     """
-    return handle is not None and handle != ""
+    if handle is None or handle == "":
+        return False
+    manifest = _handle_manifest(trust_roots)
+    if manifest is None:
+        return True
+    return handle in manifest
+
+
+def _handle_manifest(trust_roots: Any):
+    """Extract a set of genuine source handles from ``trust_roots``, or None.
+
+    Accepts a set/list of handle strings, or a dict carrying a ``handle_manifest``
+    key. Returns None when no handle manifest is present, so ``resolve_handle``
+    falls back to presence-only (the PKI path passes root-dicts, which carry no
+    handle manifest, so it is unaffected).
+    """
+    if trust_roots is None:
+        return None
+    if isinstance(trust_roots, dict):
+        m = trust_roots.get("handle_manifest")
+        return set(m) if m is not None else None
+    if isinstance(trust_roots, (set, frozenset)):
+        return set(trust_roots)
+    if isinstance(trust_roots, (list, tuple)):
+        if trust_roots and all(isinstance(x, str) for x in trust_roots):
+            return set(trust_roots)
+        return None
+    return None
 
 
 def compute_tier(
@@ -75,6 +110,8 @@ def compute_tier(
         ``handle`` (a non-cryptographic but resolvable source identifier).
     trust_roots : Any
         Configured set of trusted roots the validator checks a claim against.
+        For the structural (handle) path this carries the genuine-source manifest
+        (a set/list of handles, or a dict with a ``handle_manifest`` key).
     validator : AttestationValidator, optional
         Backend that decides whether a cryptographic claim chains to a trust root.
         If a claim is present but no validator is configured, the claim is treated
@@ -106,7 +143,7 @@ def compute_tier(
         }
 
     handle = evidence.get("handle")
-    if handle is not None and resolve_handle(handle):
+    if handle is not None and resolve_handle(handle, trust_roots):
         return {
             "value": Tier.WEAK,
             "basis": "resolvable_handle",
