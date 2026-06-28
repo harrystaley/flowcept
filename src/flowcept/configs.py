@@ -95,9 +95,9 @@ ATTESTATION_TRUST_ROOTS = ATTESTATION_SETTINGS.get("trust_roots", [])
 
 _GATE = ATTESTATION_SETTINGS.get("gate", {}) or {}
 ATTESTATION_GATE_ENABLED = _GATE.get("enabled", False)
-ATTESTATION_GATE_MODE = _GATE.get("mode", "soft")
-ATTESTATION_HARD_BLOCKED_TIERS = list(_GATE.get("hard_blocked_tiers", ["N"]))
-ATTESTATION_SOFT_WEIGHT_FACTORS = dict(_GATE.get("soft_weight_factors", {"S": 1.0, "W": 0.5, "N": 0.0}))
+# Single policy: a per-tier weight vector. Weight 0 excludes (drops) a tier; any
+# 0 < w <= 1 down-weights it. "Blocking" is just weight 0 -- there is no separate mode.
+ATTESTATION_WEIGHT_FACTORS = dict(_GATE.get("weight_factors", {"S": 1.0, "W": 0.5, "N": 0.0}))
 
 ##########################
 #  Experiment Settings   #

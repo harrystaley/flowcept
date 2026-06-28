@@ -17,8 +17,7 @@ from flowcept.commons.vocabulary import Status
 from flowcept.commons.attestation.gate import gate_rerank
 from flowcept.configs import (
     ATTESTATION_GATE_ENABLED,
-    ATTESTATION_GATE_MODE,
-    ATTESTATION_SOFT_WEIGHT_FACTORS,
+    ATTESTATION_WEIGHT_FACTORS,
     INSTRUMENTATION_ENABLED,
     REPLACE_NON_JSON_SERIALIZABLE,
     TELEMETRY_ENABLED,
@@ -56,8 +55,11 @@ def agent_flowcept_task(func=None, **decorator_kwargs):
         logger = FlowceptLogger()
 
     def decorator(func):
+        """Wrap ``func`` so each call is captured as an agent task and gated."""
+
         @wraps(func)
         def wrapper(*args, **kwargs):
+            """Run the wrapped function, capture it as a task, and gate its result."""
             if not INSTRUMENTATION_ENABLED:
                 return func(*args, **kwargs)
 
@@ -103,8 +105,8 @@ def agent_flowcept_task(func=None, **decorator_kwargs):
                 logger.exception(e)
 
             interceptor.intercept(task_obj.to_dict())
-            if ATTESTATION_GATE_ENABLED and ATTESTATION_GATE_MODE == "soft" and result is not None:
-                result = gate_rerank(result, ATTESTATION_SOFT_WEIGHT_FACTORS)
+            if ATTESTATION_GATE_ENABLED and result is not None:
+                result = gate_rerank(result, ATTESTATION_WEIGHT_FACTORS)
             return result
 
         return wrapper
@@ -152,7 +154,7 @@ def extract_llm_usage(response: Any, fallback_model: str | None = None) -> Dict[
 
     input_tokens = usage.get("input_tokens") or token_usage.get("prompt_tokens") or token_usage.get("input_tokens")
     output_tokens = (
-        usage.get("output_tokens") or token_usage.get("completion_tokens") or token_usage.get("output_tokens")
+            usage.get("output_tokens") or token_usage.get("completion_tokens") or token_usage.get("output_tokens")
     )
     total_tokens = usage.get("total_tokens") or token_usage.get("total_tokens")
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
@@ -258,14 +260,32 @@ class FlowceptLLM(Runnable):
     """
 
     def __init__(
-        self,
-        llm: BaseLanguageModel,
-        agent_id: str = None,
-        parent_task_id: str = None,
-        workflow_id=None,
-        campaign_id=None,
-        return_response_object: bool = False,
+            self,
+            llm: BaseLanguageModel,
+            agent_id: str = None,
+            parent_task_id: str = None,
+            workflow_id=None,
+            campaign_id=None,
+            return_response_object: bool = False,
     ):
+        """Wrap an LLM so its prompts and responses are captured as provenance.
+
+        Parameters
+        ----------
+        llm : BaseLanguageModel
+            The underlying LangChain-compatible LLM to wrap.
+        agent_id : str, optional
+            Identifier of the agent that owns this LLM.
+        parent_task_id : str, optional
+            Identifier of the parent task, if this interaction is nested.
+        workflow_id : optional
+            Identifier of the associated workflow execution.
+        campaign_id : optional
+            Identifier of the associated campaign or experiment.
+        return_response_object : bool, default False
+            If True, calls return the raw response object; otherwise the
+            response text is returned.
+        """
         self.llm = llm
         self.agent_id = agent_id
         self.worflow_id = workflow_id
@@ -275,17 +295,36 @@ class FlowceptLLM(Runnable):
         self.return_response_object = return_response_object
 
     def _our_call(self, messages, **kwargs):
+        """Invoke the wrapped LLM inside a captured task.
+
+        Renders the messages, opens a :class:`FlowceptTask` recording the prompt as
+        ``used`` and the response as ``generated`` (plus token-usage metadata), and
+        returns the response text, or the raw response object when
+        ``return_response_object`` is set.
+
+        Parameters
+        ----------
+        messages : str or list of dict
+            The prompt, as a string or a list of role/content message dicts.
+        **kwargs
+            Forwarded to the underlying LLM's ``invoke``.
+
+        Returns
+        -------
+        str or Any
+            The response text, or the raw response object.
+        """
         messages_str = FlowceptLLM._format_messages(messages)
         used = {"prompt": messages_str}
         with FlowceptTask(
-            used=used,
-            subtype="llm_task",
-            custom_metadata=self.metadata,
-            agent_id=self.agent_id,
-            activity_id="llm_interaction",
-            campaign_id=self.campaign_id,
-            workflow_id=self.worflow_id,
-            parent_task_id=self.parent_task_id,
+                used=used,
+                subtype="llm_task",
+                custom_metadata=self.metadata,
+                agent_id=self.agent_id,
+                activity_id="llm_interaction",
+                campaign_id=self.campaign_id,
+                workflow_id=self.worflow_id,
+                parent_task_id=self.parent_task_id,
         ) as task:
             response = self.llm.invoke(messages, **kwargs)
             response_str = response.content if hasattr(response, "content") else str(response)
@@ -304,11 +343,11 @@ class FlowceptLLM(Runnable):
             return response_str
 
     def call(
-        self,
-        messages: Union[str, List[Dict[str, str]]],
-        tools: Optional[List[dict]] = None,
-        callbacks: Optional[List[Any]] = None,
-        available_functions: Optional[Dict[str, Any]] = None,
+            self,
+            messages: Union[str, List[Dict[str, str]]],
+            tools: Optional[List[dict]] = None,
+            callbacks: Optional[List[Any]] = None,
+            available_functions: Optional[Dict[str, Any]] = None,
     ) -> Union[str, Any]:
         """Invoke method used by some other LLMs."""
         return self._our_call(messages)
@@ -323,6 +362,23 @@ class FlowceptLLM(Runnable):
 
     @staticmethod
     def _format_messages(messages: Union[str, List[Dict[str, str]]]) -> str:
+        """Render messages into a single human-readable string.
+
+        Parameters
+        ----------
+        messages : str or list of dict
+            Either a raw prompt string, or a list of ``{"role", "content"}`` dicts.
+
+        Returns
+        -------
+        str
+            The prompt as a string; role/content dicts are joined one per line.
+
+        Raises
+        ------
+        ValueError
+            If ``messages`` is neither a string nor a list.
+        """
         if isinstance(messages, str):
             return messages
         elif isinstance(messages, list):

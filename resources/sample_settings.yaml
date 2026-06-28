@@ -9,9 +9,13 @@ attestation:
       type: "bundled"
   gate:
     enabled: true
-    mode: "soft"                 # "soft" | "hard" | "off"
-    hard_blocked_tiers: ["N"]    # HARD policy (Flowcept, not data)
-    soft_weight_factors:         # SOFT policy (Flowcept, not data)
+    # Single policy: a per-tier weight vector (Flowcept policy, not data).
+    # The gate multiplies each retrieved candidate's similarity by its tier weight
+    # and drops zero-weight items, so "blocking" a tier is simply weight 0.
+    #   weight 0      -> tier excluded (dropped from results)
+    #   0 < weight <1 -> tier down-weighted (kept, penalized)
+    #   weight 1      -> tier unaffected
+    weight_factors:
       S: 1.0
       W: 0.5
       N: 0.0
